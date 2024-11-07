@@ -1,65 +1,5 @@
 # Document-Isolation-Policy explainer
 
-This is the repository for Document-Isolation-Policy. You're welcome to
-[contribute](CONTRIBUTING.md)!
-
-## Authors:
-
-- [Camille Lamy](https://github.com/camillelamy)
-
-## Participate
-- [Issue tracker](https://github.com/WICG/document-isolation-policy/issues)
-
-## Table of Contents
-
-<!-- START doctoc generated TOC please keep comment here to allow auto update -->
-<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
-
-- [Introduction](#introduction)
-- [Goals](#goals)
-- [Non-goals](#non-goals)
-- [Use cases](#use-cases)
-  - [App with cross-origin popup](#app-with-cross-origin-popup)
-  - [App with 3rd party iframe](#app-with-3rd-party-iframe)
-  - [Embedded widget](#embedded-widget)
-- [Background: Process wide XS-Leaks and the crossOriginIsolated model](#background-process-wide-xs-leaks-and-the-crossoriginisolated-model)
-  - [Same-origin policy](#same-origin-policy)
-  - [Process wide XS-Leaks](#process-wide-xs-leaks)
-  - [The cross-origin isolation model](#the-cross-origin-isolation-model)
-  - [Cross origin isolation limits](#cross-origin-isolation-limits)
-    - [Deployability](#deployability)
-    - [Iframes getting access to COI-gated APIs](#iframes-getting-access-to-coi-gated-apis)
-  - [Out-of-process iframes evolving landscape](#out-of-process-iframes-evolving-landscape)
-- [Document-Isolation-Policy](#document-isolation-policy)
-  - [Document-Isolation-Policy header](#document-isolation-policy-header)
-  - [Interaction with COEP](#interaction-with-coep)
-  - [Interaction with COOP](#interaction-with-coop)
-  - [Interaction with Permission Policy](#interaction-with-permission-policy)
-  - [Interaction with the Origin-Agent-Cluster header](#interaction-with-the-origin-agent-cluster-header)
-  - [Impact on agent clustering](#impact-on-agent-clustering)
-    - [A note on SharedArrayBuffers and agent clusters](#a-note-on-sharedarraybuffers-and-agent-clusters)
-  - [Interaction with Fetch](#interaction-with-fetch)
-  - [Inheritance](#inheritance)
-  - [Interactions with workers](#interactions-with-workers)
-  - [Interaction with Isolated Web Apps](#interaction-with-isolated-web-apps)
-  - [Reporting](#reporting)
-  - [How this solution would solve the use cases](#how-this-solution-would-solve-the-use-cases)
-    - [App with cross-origin popup](#app-with-cross-origin-popup-1)
-    - [App with 3rd party iframe](#app-with-3rd-party-iframe-1)
-    - [Embedded widget](#embedded-widget-1)
-- [Considered alternatives](#considered-alternatives)
-  - [COOP restrict-properties](#coop-restrict-properties)
-  - [Origin-Agent-Cluster](#origin-agent-cluster)
-  - [Keeping the status quo](#keeping-the-status-quo)
-  - [Provide access to COI-gated APIs when full SiteIsolation is available](#provide-access-to-coi-gated-apis-when-full-siteisolation-is-available)
-  - [Browsing context group switch instead of agent cluster keying](#browsing-context-group-switch-instead-of-agent-cluster-keying)
-  - [Relying on COEP for the subresources checks](#relying-on-coep-for-the-subresources-checks)
-  - [Restricting the ability to use Document-Isolation-Policy for cross-origin iframes](#restricting-the-ability-to-use-document-isolation-policy-for-cross-origin-iframes)
-- [Stakeholder Feedback / Opposition](#stakeholder-feedback--opposition)
-- [References & acknowledgements](#references--acknowledgements)
-
-<!-- END doctoc generated TOC please keep comment here to allow auto update -->
-
 ## Introduction
 
 Developers want to build applications that are fast using [SharedArrayBuffers](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer) (SAB), which can improve computation time by ~40%. But SharedArrayBuffers allow to create high-precision timers that can be exploited in a [Spectre](https://en.wikipedia.org/wiki/Spectre_(security_vulnerability)) attack, allowing to leak cross-origin user data. To mitigate the risk, SharedArrayBuffers are gated behind [crossOriginIsolation](https://developer.mozilla.org/en-US/docs/Web/API/crossOriginIsolated) (COI). CrossOriginIsolation requires to deploy both [Cross-Origin-Opener-Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cross-Origin-Opener-Policy) (COOP) and [Cross-Origin-Embedder-Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cross-Origin-Embedder-Policy) (COEP). Both have proven hard to deploy, COOP because it prevents communication with cross-origin popups, and COEP because it imposes restrictions on third-party embeds. Finally, the whole COOP + COEP model is focused on providing access to SharedArrayBuffers to the top-level frame. Cross-origin embeds can only use SABs if their embedder deploys crossOriginIsolation and delegates the permission to use COI-gated APIs, making the availability of SABs in third-party iframes very unreliable.
@@ -70,39 +10,10 @@ The API proposed in this document, Document-Isolation-Policy, is proposing to so
 
 We want to provide end users with web applications that can perform compute heavy tasks efficiently (e.g. video games, videoconferencing, photo editing) and make use of the composability of the web (to allow for more convenient OAuth/payment flows, to embed cross-origin widgets such as a social media sharing widget,...). And we want this to happen without introducing security flaws in the web platform that would allow malicious applications to gain access to cross-origin user data.
 
-## Non-goals
-
-While the original [crossOriginIsolation](https://developer.mozilla.org/en-US/docs/Web/API/crossOriginIsolated) proposal was agnostic to the platform [SiteIsolation](https://www.chromium.org/Home/chromium-security/site-isolation/) capability, this proposal will rely on a browser's ability to isolate iframes in a different process from their embedder.
-
-We're also only considering the case of embedded widgets that have their own document. We do not plan to give access to COI-gated APIs to third-party scripts if their execution context does not deploy COI.
-
-## Use cases
-
-### App with cross-origin popup
-
-The user would like some of their compute heavy web apps to be faster (e.g. games, spreadsheet, photo editing, videoconferencing). To make these apps faster, relying on multithreading and shared memory is needed, but this means having access to SharedArrayBuffers. Currently, a web app cannot use shared memory and cross-origin popups at the same time due to the restriction imposed by crossOriginIsolation. This means the web app cannot use 3rd party OAuth or payment flows.
-
-### App with 3rd party iframe
-
-The user would like some of their compute heavy web apps to be faster (e.g. games, spreadsheet, photo editing, videoconferencing). To make these apps faster, relying on multithreading and shared memory is needed, but this means having access to SharedArrayBuffers. Currently, a web app using shared memory is limited in the 3rd party iframes that it can embed. For example, it cannot embed personalized ads unless the ads do a lot of work to support COEP themselves. Personalized ads are the revenue model for a lot of free web apps, so that means those free web apps cannot use shared memory unless the whole ad ecosystem deploys COEP.
-
-### Embedded widget
-
-The user would like some of the embedded widgets on the page they browse to be faster (e.g. photo library widget, map widget, video chat widget, ...). To make these widgets faster, relying on multithreading and shared memory is needed, but this means having access to SharedArrayBuffers. But access to SharedArrayBuffers is only possible if the embedder of the widget deploys crossOriginIsolation (with the constraints described in the previous use cases). So a widget embedded in a wide variety of websites cannot use shared memory to improve its performance.
-
 ## Background: Process wide XS-Leaks and the crossOriginIsolated model
 
-### Same-origin policy
-
-The same-origin policy is a critical security mechanism in the web that helps to isolate different websites and prevent them from accessing each other's data. It works by restricting the interaction between web pages based on their origin, which is determined by the combination of the scheme (e.g., HTTP or HTTPS), the host name, and the port number.
-
-Under the same-origin policy, web pages can only access data from other pages that have the same origin. This helps protect user data and prevents malicious websites from accessing sensitive information, such as passwords or credit card numbers.
-
-There are a few exceptions to the same-origin policy, such as cross-origin resource sharing (CORS). However, these exceptions are carefully designed to preserve the security of user data.
-
-The same-origin policy is an essential part of web security, and it helps to protect users from a variety of attacks. By preventing websites from accessing each other's data, the same-origin policy helps to keep user data safe and secure, and allows the web to remain composable.
-
 ### Process wide XS-Leaks
+
 Unfortunately, several web APIs allow an attacker to bypass the same-origin policy and to leak information from authenticated cross-origin resources. These kinds of vulnerabilities are known as XS-Leaks. In particular, we will focus on process-wide XS-Leaks, which can affect any resource loaded in the same renderer process as an attacker.
 
 Process-wide XS-Leaks can be direct. For example, [performance.measureUserAgentSpecificMemory](https://developer.mozilla.org/en-US/docs/Web/API/Performance/measureUserAgentSpecificMemory) allows to easily leak a resource size. Leaking a resource size can be exploited in various cross-site search attacks that target resources that vary based on query parameters.
@@ -464,15 +375,3 @@ Document-Isolation-Policy requires process isolation, which has a memory cost. I
 
 - we want to solve the use case of embedded widgets. Having their embedder be able to restrict the ability to use COI gated APIs is problematic, as this means that website developers have to maintain two versions of their widgets (with and without COI gated APIs), which is more costly and complex.
 - the problem of cross-origin iframes using too much memory is a more global one, and it's not clear this particular API should be restricted as opposed to the multitude of other APIs that also use memory.
-
-## Stakeholder Feedback / Opposition
-
-## References & acknowledgements
-
-Many thanks for valuable feedback and advice from:
-
-- [Artur Janc](https://github.com/arturjanc)
-- [Charlie Reis](https://github.com/csreis)
-- [David Dworken](https://github.com/ddworken)
-- [Domenic Denicola](https://github.com/domenic)
-- [Mike West](https://github.com/mikewest)
